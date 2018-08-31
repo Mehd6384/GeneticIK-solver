@@ -1,6 +1,12 @@
 import numpy as np 
 import arcade 
-from GA import GeneticSolver
+import GA 
+from pso import Swarm
+from genetic_parser import Parser 
+
+import matplotlib.pyplot as plt 
+plt.style.use('dark_background')
+
 
 def compute_effector_position(config, joints_length): 
 
@@ -21,15 +27,15 @@ def normalize_angle(angle):
 
 class Target: 
 
-	def __init__(self, pos_ini = None): 
+	def __init__(self, max_distance): 
 
-		self.pos = pos_ini if pos_ini != None else np.random.uniform(0.,1.,(2))
+		angle = np.random.uniform(0, np.pi*2.)
+		self.pos = np.array([np.cos(angle),np.sin(angle)])*max_distance*np.random.random()
+		self.pos += 0.5
 
 	@property
 	def draw_info(self):
 		return self.pos.copy()
-	
-
 
 class Robot: 
 
@@ -73,34 +79,51 @@ class Robot:
 
 class World: 
 
-	def __init__(self, nb_joints, joints_length):
+	def __init__(self, args):
 
+		self.max_steps = args.max_steps
+		self.steps = 0
 		
-		self.nb_joints, self.joints_length = nb_joints, joints_length
-		self.r1 = Robot(nb_joints, joints_length)
-		self.r2 = Robot(nb_joints, joints_length)
-		self.target = Target()
+		self.nb_joints, self.joints_length = args.nb_joints, args.joint_length
+		self.max_distance = (self.nb_joints-1)*self.joints_length
+		self.nb_elites = args.elite_pop
 
-		self.solver = GeneticSolver(10, self.nb_joints-1, joints_length)
-		self.solver.init_pop(self.r1.config.reshape(1,-1))
+		self.r1 = Robot(self.nb_joints, self.joints_length)
+		self.target = Target(self.max_distance)
+
+		self.nb_obstacles = args.nb_obstacles
+		self.obstacles = None if self.nb_obstacles == 0 else [Target(self.max_distance) for i in range(self.nb_obstacles)]
+
+		if args.algo == 'ga': 
+			self.solver = GA.GeneticSolver(args.pop_size, self.joints_length, self.r1.config)
+		elif args.algo == 'ga_elite': 
+			self.solver = GA.GeneticSolverWithElitism(args.pop_size, self.joints_length, self.r1.config, self.nb_elites)
+
 
 	def step(self): 
 
-		r = np.random.uniform(-0.1,0.1,(self.nb_joints-1))
-		self.r1.rotate(r)
-		nex_conf = self.solver.evolve(self.target.pos)
+		complete = False
+		self.steps += 1
+
+		if self.steps >= self.max_steps: 
+			complete = True
+		
+		nex_conf = self.solver.evolve(self.target.pos, self.obstacles)
 		self.r1.set_config(nex_conf)
 
 		d = self.compute_distance_end_effector_target()
 		if d < 0.03: 
-			self.reset()
+			complete = True
+
+
+		return complete, self.steps
 		
 
 	def reset(self): 
 
-		self.r1 = Robot(self.nb_joints, self.joints_length)
-		self.r2 = Robot(self.nb_joints, self.joints_length)
-		self.target = Target()
+		# self.r1 = Robot(self.nb_joints, self.joints_length)
+		self.steps = 0
+		self.target = Target(self.max_distance)
 
 	def compute_distance_end_effector_target(self): 
 
@@ -133,6 +156,15 @@ class Render(arcade.Window):
 		arcade.draw_circle_filled(target_pos[0], target_pos[1], 5, (250, 15, 0))
 
 
+		if self.world.obstacles != None: 
+			for o in self.world.obstacles: 
+
+				ob_pos = o.draw_info*self.size
+				arcade.draw_circle_filled(ob_pos[0], ob_pos[1], 15, (250, 250, 0))
+				arcade.draw_circle_filled(ob_pos[0], ob_pos[1], 10, (0, 0, 0))
+				arcade.draw_circle_filled(ob_pos[0], ob_pos[1], 5, (250, 250, 0))
+
+
 		p = compute_effector_position(self.world.r1.config.reshape(1,-1), self.world.r1.joints_length)
 		arcade.draw_text("Effector pos: {}\nDistance target: {}".format(p, distance(p, self.world.target.pos)), p[0]*self.size, p[1]*self.size, arcade.color.WHITE, 12)
 
@@ -140,13 +172,40 @@ class Render(arcade.Window):
 	def update(self, value): 
 
 		a = 0
-		self.world.step()
+		over, _ = self.world.step()
+		if over: self.world.reset()
 
 
-world = World(nb_joints = 5, joints_length = 0.1)
-render = Render(world)
-# for i in range(2000): 
+args = Parser()
 
-	# world.step(np.random.uniform(-0.1,0.1, (5)))
-	# world.step()
-arcade.run()
+if args.mode == 'show': 
+
+	world = World(args)
+	render = Render(world)
+	# for i in range(2000): 
+
+		# world.step(np.random.uniform(-0.1,0.1, (5)))
+		# world.step()
+	arcade.run()
+
+elif args.mode == 'eval': 
+
+	world = World(args)
+
+	epochs = args.nb_eval
+	recap = []
+	for epoch in range(epochs): 
+
+		over = False 
+		while not over: 
+
+			over, steps = world.step()
+			if over: 
+				recap.append(steps)
+
+		if epoch%100 == 0: 
+			print('Evaluating... {}/{}'.format(epoch, epochs))
+
+	plt.hist(recap, bins = 4, rwidth = 0.8)
+	plt.show()
+
